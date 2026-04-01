@@ -1,0 +1,47 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment variables and secrets
+.env
+.env.*
+*.env
+
+# Cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE and Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Test data & personal information files
+# We ignore specific test chat data and generated personal skill files
+test_chat_data.md
+test_persona_report.md
+test_knowledge_report.md
+laoli.skill.md
+*.skill.md
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
