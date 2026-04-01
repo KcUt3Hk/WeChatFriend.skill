@@ -8,6 +8,7 @@ import yaml
 import re
 import os
 import json
+import traceback
 from dotenv import load_dotenv
 from openai import OpenAI
 import httpx
@@ -42,26 +43,20 @@ class DigitalFriendChatApp:
         # 气泡图片缓存
         self._bubble_images = {}
         
-        # 优先读取 SILICONFLOW 的配置，如果没有则回退读取 OPENAI 的配置
-        self.api_key = os.environ.get("SILICONFLOW_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
-        self.base_url = os.environ.get("SILICONFLOW_BASE_URL") or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-        self.model_name = os.environ.get("SILICONFLOW_MODEL") or os.environ.get("OPENAI_MODEL_NAME", "gpt-4o")
+        # 优先读取 OFOX 的配置，如果没有则回退读取 SILICONFLOW 或 OPENAI 的配置
+        self.api_key = os.environ.get("OFOX_API_KEY") or os.environ.get("SILICONFLOW_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
+        self.base_url = os.environ.get("OFOX_BASE_URL") or os.environ.get("SILICONFLOW_BASE_URL") or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        self.model_name = os.environ.get("OFOX_MODEL") or os.environ.get("SILICONFLOW_MODEL") or os.environ.get("OPENAI_MODEL_NAME", "gpt-4o")
         
         # 初始化 OpenAI Client
-        # 使用 httpx.Timeout 配置更详细的超时策略
-        # 针对 peer closed connection without sending complete message body 错误
-        # 我们增加 max_retries 并通过 http_client 配置底层重试机制和 Keep-Alive
+        # 增加 timeout=300.0 以避免在等待思考时间过长时超时断开
         self.client = None
         if self.api_key:
-            http_client = httpx.Client(
-                timeout=httpx.Timeout(connect=30.0, read=300.0, write=30.0, pool=30.0),
-                transport=httpx.HTTPTransport(retries=3) # 允许底层 TCP 连接重试
-            )
             self.client = OpenAI(
                 api_key=self.api_key,
                 base_url=self.base_url,
-                http_client=http_client,
-                max_retries=3 # 允许 OpenAI SDK 层面重试
+                timeout=300.0,
+                max_retries=3 # 允许 SDK 在遇到临时网络错误时自动重试
             )
         
         self.setup_ui()
@@ -74,11 +69,11 @@ class DigitalFriendChatApp:
         if not self.api_key:
             messagebox.showwarning(
                 "缺少 API Key", 
-                "未检测到 API Key 配置（如 SILICONFLOW_API_KEY 或 OPENAI_API_KEY）。\n\n"
+                "未检测到 API Key 配置（如 OFOX_API_KEY 或 SILICONFLOW_API_KEY）。\n\n"
                 "请在项目根目录下的 .env 文件中设置，例如：\n"
-                "SILICONFLOW_API_KEY='sk-xxx'\n"
-                "SILICONFLOW_MODEL='Pro/deepseek-ai/DeepSeek-V3.2'\n"
-                "SILICONFLOW_BASE_URL='https://api.siliconflow.cn/v1'"
+                "OFOX_API_KEY='sk-xxx'\n"
+                "OFOX_MODEL='openai/gpt-5.4-mini'\n"
+                "OFOX_BASE_URL='https://api.ofox.ai/v1'"
             )
 
     def setup_ui(self):
@@ -161,11 +156,11 @@ class DigitalFriendChatApp:
 
     def load_skill_file(self):
         """
-        选择并解析 .skill.md 文件，提取系统提示词。
+        选择并解析 .skill.md 或 .skill.json 文件，提取/拼接系统提示词。
         """
         file_path = filedialog.askopenfilename(
             title="选择 Skill 文件",
-            filetypes=(("Markdown files", "*.md"), ("All files", "*.*"))
+            filetypes=(("JSON Skill", "*.json"), ("Markdown files", "*.md"), ("All files", "*.*"))
         )
         
         if not file_path:
@@ -175,24 +170,73 @@ class DigitalFriendChatApp:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
                 
-            # 解析 YAML Frontmatter 获取名字
-            frontmatter_match = re.search(r'^---\n(.*?)\n---', content, re.DOTALL)
-            if frontmatter_match:
-                yaml_content = frontmatter_match.group(1)
-                try:
-                    metadata = yaml.safe_load(yaml_content)
-                    if 'description' in metadata:
-                        desc = metadata['description']
-                        name_match = re.search(r'：(.*)$', desc)
-                        if name_match:
-                            self.friend_name = name_match.group(1).strip()
-                        else:
-                            self.friend_name = desc
-                except yaml.YAMLError:
-                    pass
-            
-            # 去掉 Frontmatter 剩下的作为 System Prompt
-            self.system_prompt = re.sub(r'^---\n.*?\n---\n', '', content, flags=re.DOTALL).strip()
+            if file_path.endswith('.json'):
+                # V4.0 JSON 格式结构化 Skill
+                skill_data = json.loads(content)
+                metadata = skill_data.get("metadata", {})
+                self.friend_name = metadata.get("source_friend", "数字好友")
+                
+                persona = skill_data.get("persona", {})
+                language_habits = persona.get("language_habits", {})
+                knowledge_base = skill_data.get("knowledge_base", {})
+                chat_samples = skill_data.get("chat_samples", [])
+                recent_context = skill_data.get("recent_context", [])
+                
+                # 将 chat_samples 格式化为对话字符串
+                formatted_samples = ""
+                for sample in chat_samples:
+                    formatted_samples += f"用户: {sample.get('q', '')}\n{self.friend_name}: {sample.get('a', '')}\n\n"
+                    
+                formatted_context = "\n".join(recent_context)
+                
+                # 动态组装 System Prompt
+                self.system_prompt = f"""
+# 角色设定
+{persona.get('role_description', f'你现在是{self.friend_name}，请1:1模仿该人物的语气进行对话。')}
+
+核心性格特征：{', '.join(persona.get('core_traits', []))}
+
+# 语言与回复习惯
+- 句子长度偏好：{language_habits.get('sentence_length', '')}
+- 标点符号偏好：{language_habits.get('punctuation_preference', '')}
+- 常用口头禅：{', '.join(language_habits.get('catchphrases', []))}
+- 常用表情包/符号：{', '.join(language_habits.get('emoji_usage', []))}
+
+# 共同记忆与知识库
+- 经常聊的话题：{', '.join(knowledge_base.get('top_topics', []))}
+- 关键记忆：{knowledge_base.get('key_memories', '')}
+
+# 行为要求
+- 必须遵守微信聊天的口语化、碎片化习惯。
+- 严禁以 AI 助手身份回答，不要解释你在扮演谁。
+- 绝不要使用书面语，严格遵循上述的标点符号和表情包偏好。
+- 如果需要分段表达多层意思，请使用换行（回车）。
+- 在回复前，请在 <thinking></thinking> 标签内进行内心独白，思考“我作为一个具有上述性格和价值观的人，平时是怎么回复这句话的？”。
+
+# 典型对话参考 (仅供模仿语感，不要生硬照搬内容)
+{formatted_samples}
+
+# 最近的真实对话上下文 (短期记忆，请接续语境)
+{formatted_context}
+"""
+            else:
+                # V2.0 兼容旧版的 Markdown 格式
+                frontmatter_match = re.search(r'^---\n(.*?)\n---', content, re.DOTALL)
+                if frontmatter_match:
+                    yaml_content = frontmatter_match.group(1)
+                    try:
+                        metadata = yaml.safe_load(yaml_content)
+                        if 'description' in metadata:
+                            desc = metadata['description']
+                            name_match = re.search(r'：(.*)$', desc)
+                            if name_match:
+                                self.friend_name = name_match.group(1).strip()
+                            else:
+                                self.friend_name = desc
+                    except yaml.YAMLError:
+                        pass
+                
+                self.system_prompt = re.sub(r'^---\n.*?\n---\n', '', content, flags=re.DOTALL).strip()
             
             self.root.title(f"微信聊天 - {self.friend_name}")
             self.clear_chat()
@@ -400,6 +444,13 @@ class DigitalFriendChatApp:
         self.append_chat_bubble("me", user_text)
         self.chat_history.append({"role": "user", "content": user_text})
         
+        # --- 滑动窗口机制 ---
+        # 仅保留 System Prompt 和最近的 3 轮对话（6条消息），确保 Token 消耗降至最低
+        # 索引 0 永远是 system prompt
+        MAX_HISTORY_MESSAGES = 6
+        if len(self.chat_history) > MAX_HISTORY_MESSAGES + 1:
+            self.chat_history = [self.chat_history[0]] + self.chat_history[-MAX_HISTORY_MESSAGES:]
+            
         # 禁用发送按钮
         self.send_btn.config(state=tk.DISABLED, text="发送中")
         
@@ -409,9 +460,32 @@ class DigitalFriendChatApp:
         # 启动线程调用 API (不再预先创建空白气泡)
         threading.Thread(target=self.call_llm_api, daemon=True).start()
 
+    def get_streaming_response(self):
+        """
+        后端推理逻辑：通过 yield 实现流式推送
+        """
+        print("\n[请求发送] 正在调用 LLM API，模型:", self.model_name)
+        response_stream = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=self.chat_history,
+            temperature=0.7,
+            max_tokens=800,
+            stream=True
+        )
+        
+        print("[流式响应开始] ", end="", flush=True)
+        for chunk in response_stream:
+            # 安全地提取内容，防止返回空 choices 或没有 content 的 chunk
+            if hasattr(chunk, 'choices') and len(chunk.choices) > 0:
+                delta = chunk.choices[0].delta
+                if hasattr(delta, 'content') and delta.content is not None:
+                    print(delta.content, end="", flush=True)
+                    yield delta.content
+        print("\n[流式响应结束]\n")
+
     def call_llm_api(self):
         """
-        使用官方 OpenAI SDK 调用兼容 API（支持流式输出），极大地提升网络稳定性和兼容性。
+        处理前端渲染的线程函数，调用后端的流式生成器
         """
         if not self.client:
             self.root.after(0, lambda: self.append_system_msg("[错误] API 客户端未初始化，请检查 API Key。"))
@@ -421,59 +495,62 @@ class DigitalFriendChatApp:
         try:
             full_reply = ""
             
-            # 使用 OpenAI 官方 SDK 发起流式请求
-            response_stream = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=self.chat_history,
-                temperature=0.7,
-                max_tokens=800,
-                stream=True
-            )
-            
-            for chunk in response_stream:
-                delta = chunk.choices[0].delta
-                if hasattr(delta, 'content') and delta.content is not None:
-                    full_reply += delta.content
-                    
-                    # 处理流式的显示逻辑
-                    if "<thinking>" in full_reply and "</thinking>" not in full_reply:
-                        # 正在思考，不创建气泡，只保持按钮提示
-                        self.root.after(0, lambda: self.send_btn.config(text="正在思考..."))
-                    else:
-                        # 思考结束或开始产生实际内容
-                        display_text = re.sub(r'<thinking>.*?</thinking>', '', full_reply, flags=re.DOTALL).strip()
-                        if display_text:
-                            # 如果还未创建气泡，则动态创建一个
-                            if bubble_label is None:
-                                # 需要在主线程创建气泡并保存引用
-                                # 因为不能直接在子线程获取 Tkinter 返回的 Widget 引用并赋值给局部变量
-                                # 这里我们使用一个简单的技巧：一次性把最终结果渲染，或者牺牲一点点逐字流式
-                                # 为了追求微信的完美效果，当第一批真实文字出来时，我们创建气泡
-                                # 在此版本中，为了防止多线程创建 UI 的竞争，我们在流结束时再完整渲染，或者
-                                # 采用一个列表引用来接收
-                                pass
-                                
-                            if bubble_label is None:
-                                # 为了安全地跨线程传递创建的组件，这里我们改为：
-                                # 当第一次发现有真实内容时，在主线程调用 append_chat_bubble
-                                # 但为了简单处理，我们可以暂时退回到 “收集完内容再一次性渲染” 
-                                # 因为微信平时发消息就是“对方正在输入...”，然后整条消息弹出来
-                                # 这比逐字蹦出来更像微信！
-                                self.root.after(0, lambda: self.send_btn.config(text="正在输入..."))
+            # 使用提取的流式生成器
+            for content_chunk in self.get_streaming_response():
+                full_reply += content_chunk
+                
+                # 处理流式的显示逻辑
+                if "<thinking>" in full_reply and "</thinking>" not in full_reply:
+                    # 正在思考，只保持按钮和标题提示
+                    self.root.after(0, lambda: self.send_btn.config(text="正在思考..."))
+                else:
+                    # 思考结束或开始产生实际内容，提取真实的回复内容
+                    display_text = re.sub(r'<thinking>.*?</thinking>', '', full_reply, flags=re.DOTALL).strip()
+                    if display_text:
+                        # 动态组装提示，并提示正在输入
+                        self.root.after(0, lambda: self.send_btn.config(text="正在输入..."))
                         
-            # 最终获取完整回复后，统一渲染一次到界面（完美模拟微信：正在输入完毕后，整条弹出）
+                        # 当第一个真实字符出现时，我们在主线程创建一个气泡
+                        if not hasattr(self, '_current_stream_bubble') or self._current_stream_bubble is None:
+                            # 跨线程调用一个辅助方法来创建和保存气泡引用
+                            self.root.after(0, self._create_empty_bubble_for_stream)
+                            # 短暂休眠让主线程有时间创建组件
+                            import time
+                            time.sleep(0.05)
+                        
+                        # 如果气泡已经创建，则逐字/逐词更新它的内容
+                        if hasattr(self, '_current_stream_bubble') and self._current_stream_bubble is not None:
+                            self.root.after(0, lambda t=display_text: self._update_stream_bubble(t))
+                        
+            # 最终获取完整回复后加入历史记录
             self.chat_history.append({"role": "assistant", "content": full_reply})
-            final_display = re.sub(r'<thinking>.*?</thinking>', '', full_reply, flags=re.DOTALL).strip()
-            if final_display:
-                self.root.after(0, lambda text=final_display: self.append_chat_bubble("friend", text))
+            
+            # 清理当前流式气泡的引用
+            self._current_stream_bubble = None
             
         except Exception as e:
+            print("\n=== [网络/执行错误详情] ===")
+            traceback.print_exc()
+            print("==========================\n")
             error_msg = f"[网络错误] {str(e)}"
             self.root.after(0, lambda: self.append_system_msg(error_msg))
         finally:
             # 恢复发送按钮和窗口标题
             self.root.after(0, lambda: self.send_btn.config(state=tk.NORMAL, text="发送"))
             self.root.after(0, lambda: self.root.title(f"微信聊天 - {self.friend_name}"))
+
+    def _create_empty_bubble_for_stream(self):
+        """在主线程中创建一个空的对方气泡，供流式更新使用"""
+        # 防止重复创建
+        if hasattr(self, '_current_stream_bubble') and self._current_stream_bubble is not None:
+            return
+        self._current_stream_bubble = self.append_chat_bubble("friend", "...")
+        
+    def _update_stream_bubble(self, text):
+        """在主线程中更新气泡的文字内容"""
+        if hasattr(self, '_current_stream_bubble') and self._current_stream_bubble is not None:
+            self._current_stream_bubble.config(text=text)
+            self._scroll_to_bottom()
 
 if __name__ == "__main__":
     root = tk.Tk()

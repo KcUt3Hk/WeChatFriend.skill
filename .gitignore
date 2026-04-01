@@ -40,6 +40,9 @@ test_persona_report.md
 test_knowledge_report.md
 laoli.skill.md
 *.skill.md
+*.skill.json
+test_network*.py
+test_ui_*.py
 
 # Build artifacts
 build/

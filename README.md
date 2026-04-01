@@ -34,35 +34,23 @@
 使用 [WeChatMsgGrabber](https://github.com/KcUt3Hk/WeChatMsgGrabber) 工具抓取你与目标好友的聊天记录，导出为 JSON 或 CSV 格式（如 `chat_with_friend.json`）。
 
 ### 2. 数据预处理
-使用提供的 Python 脚本将原始数据转化为模型更易分析的纯文本 Markdown 格式。
-请确保在终端中运行（Mac系统下请使用 Python3）：
+使用提供的 Python 脚本将原始数据转化为纯文本 Markdown 格式。
+请确保在终端中运行：
 
 ```bash
 python3 scripts/wechat_parser.py -i /path/to/chat_with_friend.json -o ./chat_data.md -m "我" -f "好友名称"
 ```
 
-### 3. 安装与运行 Skill 生成器
-确保你已经安装了 Claude Code，然后将本仓库作为 skill 引入并运行：
+### 3. 一键生成数字分身 (Skill)
+我们提供了一个自动化的 `SkillProcessor`。它会读取刚才的 `chat_data.md`，自动提取高频表情包，并调用大模型进行深度的“性格侧写”，最终生成一个结构化的 `.skill.json` 文件：
 
 ```bash
-# 进入你的工作目录或全局目录
-cd /你的/项目/路径
-# 运行 skill
-claude /create-wechat-friend
+python3 scripts/skill_generator.py -i ./chat_data.md -f "老李"
 ```
-*(注意：请根据你的 Agent 工具链的实际调用方式执行。本项目的 `SKILL.md` 即为入口文件)*
+执行完毕后，你会在当前目录下得到一个 `老李.skill.json` 文件。这便是你好友的数字灵魂。
 
-随后，AI 将根据 `intake.md` 向你提问。你需要：
-1. 提供好友的名字和基本设定。
-2. 将第2步生成的 `chat_data.md` 路径或内容提供给 AI。
-3. 等待 AI 依次执行画像提取、记忆提取，并最终在你的本地生成 `[好友名称].skill`。
-
-### 4. 召唤你的数字好友（通过 Agent 工具）
-生成完毕后，你就可以用生成的专属 Skill 来和“他/她”聊天了，他/她会用你最熟悉的语气、抛出你们才懂的梗来回复你！
-在支持 AgentSkills 标准的工具中加载即可。
-
-### 5. 桌面版“微信”对话 UI (新增)
-如果你不想在命令行里测试，我们提供了一个开箱即用的轻量级桌面聊天窗口，可以直接加载 `.skill.md` 并模拟微信聊天界面！
+### 4. 桌面版“微信”对话 UI
+我们提供了一个开箱即用的轻量级桌面聊天窗口，直接加载 `.skill.json` 并模拟微信聊天界面！
 
 **安装依赖：**
 ```bash
@@ -73,6 +61,12 @@ pip install requests pyyaml python-dotenv openai pillow
 我们推荐使用环境配置文件来管理密钥。在项目根目录下创建一个 `.env` 文件（或直接使用已有的），并写入配置：
 
 ```env
+# OFOX 配置示例 (推荐，响应速度快)
+LLM_PROVIDER=ofox
+OFOX_API_KEY="sk-替换为你的真实_API_KEY"
+OFOX_MODEL="openai/gpt-5.4-mini"
+OFOX_BASE_URL="https://api.ofox.ai/v1"
+
 # 硅基流动 (SiliconFlow) 配置示例
 SILICONFLOW_API_KEY="sk-替换为你的真实_API_KEY"
 SILICONFLOW_MODEL="Pro/deepseek-ai/DeepSeek-V3.2"
